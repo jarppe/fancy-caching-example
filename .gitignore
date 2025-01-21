@@ -1,0 +1,9 @@
+*
+
+!/src/
+!/src/**
+!/.cljfmt.edn
+!/.gitignore
+!/deps.edn
+!/docker-compose.yml
+!/tests.edn

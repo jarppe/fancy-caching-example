@@ -1,0 +1,10 @@
+{:paths   ["src/main" "resources"]
+ :deps    {org.clojure/clojure     {:mvn/version "1.12.0"}
+           redis.clients/jedis     {:mvn/version "5.2.0"}
+           metosin.logging/logging {:git/tag "0.0.4"
+                                    :git/sha "b961fda"
+                                    :git/url "git@github.com:metosin/metosin-logging"}}
+ :aliases {:dev  {:extra-paths ["src/dev"]
+                  :extra-deps  {org.clojure/tools.namespace {:mvn/version "1.5.0"}}}
+           :test {:extra-paths ["src/test"]
+                  :extra-deps  {lambdaisland/kaocha {:mvn/version "1.91.1392"}}}}}
