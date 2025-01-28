@@ -6,4 +6,5 @@
 !/.gitignore
 !/deps.edn
 !/docker-compose.yml
+!/README.md
 !/tests.edn
