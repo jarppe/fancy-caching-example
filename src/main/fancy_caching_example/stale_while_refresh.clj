@@ -17,21 +17,16 @@
 (set! *warn-on-reflection* true)
 
 
-(defn- load-dcache-lib! [^Jedis c]
-  (with-open [in (-> (io/resource "fancy_caching_example/dcache.lua")
-                     (io/input-stream))]
-    (let [dcache-lib (.readAllBytes in)]
-      (.functionLoadReplace c dcache-lib))))
-
-
 (defn init [{:keys [entry-factory pool executor encode decode]}]
   (assert (fn? entry-factory) "entry-factory is required")
   (assert (instance? JedisPool pool) "pool is required")
   (assert (instance? ExecutorService executor) "executor is required")
   (assert (or (nil? encode) (fn? encode)) "encode is must be a fn")
   (assert (or (nil? decode) (fn? decode)) "decode is must be a fn")
-  (with-open [c (.getResource ^JedisPool pool)]
-    (load-dcache-lib! c))
+  (with-open [c  (.getResource ^JedisPool pool)
+              in (-> (io/resource "fancy_caching_example/dcache.lua")
+                     (io/input-stream))]
+    (.functionLoadReplace c (.readAllBytes in)))
   {:entry-factory entry-factory
    :encode        encode
    :decode        decode
@@ -45,33 +40,29 @@
   )
 
 
-(defn- get-client ^Jedis [cache]
-  (let [^JedisPool pool (-> cache :pool)]
-    (.getResource pool)))
+(defn- fcall [{:keys [^JedisPool pool]} fname keys args]
+  (with-open [c (.getResource pool)]
+    (.fcall ^FunctionCommands c fname keys args)))
 
 
 (defn- dcache-get [cache key]
-  (let [decode (-> cache :decode)]
-    (with-open [client (get-client cache)]
-      (let [resp (.fcall ^FunctionCommands client
-                         "dcache_get"
-                         [(str key)]
-                         [(:client-id cache)])]
-        (if (and (contains? resp :value) decode)
-          (update resp :value decode)
-          resp)))))
+  (let [resp   (fcall cache "dcache_get" [(str key)] [(:client-id cache)])
+        decode (-> cache :decode)]
+    (if (and (contains? resp :value) decode)
+      (update resp :value decode)
+      resp)))
 
 
 (defn- dcache-set [cache key {:keys [value stale expire]}]
-  (let [encode (-> cache :encode)]
-    (with-open [client (get-client cache)]
-      (.fcall ^FunctionCommands client
-              "dcache_set"
-              [(str key)]
-              [(:client-id cache)
-               (if encode (encode value) value)
-               (str stale)
-               (str expire)]))))
+  (fcall cache
+         "dcache_set"
+         [(str key)]
+         [(:client-id cache)
+          (if-let [encode (-> cache :encode)]
+            (encode value)
+            value)
+          (str stale)
+          (str expire)]))
 
 
 (defn- make-entry ^Future [cache key]
@@ -84,8 +75,7 @@
     (.submit ^ExecutorService executor ^Callable task)))
 
 
-(defn- async-get [cache key]
-  (println "get:" key)
+(defn- do-get [cache key]
   (loop [wait-ms 2]
     (let [{:strs [status value]} (dcache-get cache key)]
       (case status
@@ -101,7 +91,7 @@
 
 (defn get ^CompletableFuture [cache key]
   (let [^ExecutorService executor (-> cache :executor)]
-    (CompletableFuture/supplyAsync (fn [] (async-get cache key)) executor)))
+    (CompletableFuture/supplyAsync (fn [] (do-get cache key)) executor)))
 
 
 (comment
@@ -136,4 +126,23 @@
 
   @(get cache "foo")
   ;
+
+  (def listener (future
+                  (try
+                    (let [client   (.getResource pool)
+                          listener (proxy [JedisPubSub] []
+                                     (onMessage [ch message] (println "onMessage:" (pr-str ch) (pr-str message)))
+                                     (onSubscribe [ch n] (println "onSubscribe:" (pr-str ch) n))
+                                     (onUnsubscribe [ch n] (println "onUnsubscribe:" (pr-str ch) n)))]
+                      (println "subscribing...")
+                      (.subscribe client listener (into-array String ["foo"]))
+                      (println "end"))
+                    (catch Exception e
+                      (println e)))))
+
+  (with-open [c (.getResource pool)]
+    (.publish c "foo" "hullo"))
+
+  ;
   )
+

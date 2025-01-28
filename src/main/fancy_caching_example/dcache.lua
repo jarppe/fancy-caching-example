@@ -1,5 +1,8 @@
 #!lua name=dcache
 
+local miss_timeout = "1000"
+local stale_timeout = "1000"
+
 --[[
   Usage:
     | keys  | arguments   |
@@ -67,7 +70,6 @@ redis.register_function("dcache_get", function(keys, args)
   redis.setresp(3)
 
   local entry = redis.call("HGETALL", key)["map"]
-  redis.log(redis.LOG_WARNING, cjson.encode(entry))
 
   -- Cache entry has no value and no leader:
 
@@ -75,9 +77,8 @@ redis.register_function("dcache_get", function(keys, args)
   local leader = entry["leader"]
 
   if value == nil and leader == nil then
-    redis.log(redis.LOG_WARNING, key .. " => MISS")
     redis.call("HSET", key, "leader", client_id)
-    redis.call("PEXPIRE", key, "1000")
+    redis.call("PEXPIRE", key, miss_timeout)
     return {
       map = {
         status = "MISS"
@@ -88,7 +89,6 @@ redis.register_function("dcache_get", function(keys, args)
   -- Cache entry has no value, but leader is elected:
 
   if value == nil and leader ~= nil then
-    redis.log(redis.LOG_WARNING, key .. " => PENDING")
     return {
       map = {
         status = "PENDING"
@@ -103,9 +103,8 @@ redis.register_function("dcache_get", function(keys, args)
   local now = math.floor((tonumber(s) * 1000) + (tonumber(us) / 1000))
 
   if now > stale and leader == nil then
-    redis.log(redis.LOG_WARNING, key .. " => STALE")
     redis.call("HSET", key, "leader", client_id)
-    redis.call("HPEXPIRE", key, "1000", "FIELDS", "1", "leader")
+    redis.call("HPEXPIRE", key, stale_timeout, "FIELDS", "1", "leader")
     return {
       map = {
         status = "STALE",
@@ -116,7 +115,6 @@ redis.register_function("dcache_get", function(keys, args)
 
   -- Cache hit, we have value and it's not stale:
 
-  redis.log(redis.LOG_WARNING, key .. " => OK")
   return {
     map = {
       status = "OK",
@@ -144,9 +142,10 @@ end
                   is started. Expressed as milliseconds from Unix epoch.
     <expire>      Timestamp when cached value is expired. After the expiration
                   the cached value is not available any more, and a new value
-                  must be generated. Expressed as milliseconds from Unix epoch.
+                  must be generated if entry is requested. Expressed as
+                  milliseconds from Unix epoch.
 
-  If caller calle `dcache_get` and the response status has either `"STALE"` or `"MISS"` value,
+  If the caller called `dcache_get` and the response status was either `"STALE"` or `"MISS"`,
   then the caller is expected to produce an updated value for cache entry. Once the value is
   produced caller must call this function to update the cache entry.
 
@@ -154,13 +153,16 @@ end
 ]]
 
 redis.register_function("dcache_set", function(keys, args)
-  local key = keys[1]
-  -- local client_id = args[1]
-  local value = args[2]
-  local stale = args[3]
+  local key    = keys[1]
+  -- local client_id = args[1]  ; This is un-used now, but good to have for possible future use
+  local value  = args[2]
+  local stale  = args[3]
   local expire = args[4]
 
-  redis.call("HSET", key, "value", value, "stale", stale, "expire", expire)
+  redis.call("HSET", key,
+    "value", value,
+    "stale", stale,
+    "expire", expire)
   redis.call("HDEL", key, "leader")
   redis.call("PEXPIREAT", key, expire)
 
