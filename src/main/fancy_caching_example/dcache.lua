@@ -99,8 +99,8 @@ redis.register_function("dcache_get", function(keys, args)
   -- Cache hit, but value is getting stale:
 
   local stale = tonumber(entry["stale"])
-  local s, us = unpack(redis.call("TIME"))
-  local now = math.floor((tonumber(s) * 1000) + (tonumber(us) / 1000))
+  local time = redis.call("TIME")
+  local now = math.floor((tonumber(time[1]) * 1000) + (tonumber(time[2]) / 1000))
 
   if now > stale and leader == nil then
     redis.call("HSET", key, "leader", client_id)
