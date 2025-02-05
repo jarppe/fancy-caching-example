@@ -35,3 +35,33 @@
       (Thread/sleep 100)
       (testing "after 200 ms value expired"
         (is (false? (.exists *client* (str "cache:" key))))))))
+
+
+;;
+;; Test the conflict mechanism by stealing leadership while client is
+;; creating caching value. The `cache/get` should:
+;;
+;;   1) first client calls cache and get status "MISS"
+;;   2) client starts to make a value
+;;   3) before value is ready, steal leadership
+;;   4) client calls dcache_set to set the value
+;;   5) client detects the conflict and starts the process from start
+;;   6) client gets the value set by the stealer
+;;
+
+(deftest dcache-set-conflict-test
+  (let [cache-name (gensym "dcache-set-test-")
+        key        "key"
+        full-key   (str cache-name ":" key)]
+    (with-open [cache (make-cache {:cache-name    cache-name
+                                   :entry-factory (fn [_]
+                                                    (Thread/sleep 200)
+                                                    {:value  "client value"
+                                                     :stale  1000
+                                                     :expire 2000})})]
+      (let [client (cache/get cache key)]
+        (Thread/sleep 50)
+        (.hset *client* full-key "leader" "rouge-client")
+        (.hset *client* full-key "value" "rouge-value")
+        (testing "The final value is the one set by rouge client"
+          (is (= "roguw-value" @client)))))))

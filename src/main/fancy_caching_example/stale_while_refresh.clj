@@ -22,8 +22,11 @@
 ;;
 
 
-(defn- async ^CompletableFuture [^Executor executor ^Supplier task]
+(defn- supply-async ^CompletableFuture [^Executor executor ^Supplier task]
   (CompletableFuture/supplyAsync task executor))
+
+
+(def ^:private ^String/1 dcache-set-channel-name (into-array String ["dcache_set:set"]))
 
 
 ;;
@@ -55,9 +58,6 @@
 ;;
 
 
-(def ^:private ^String/1 dcache-set-channel-name (into-array String ["dcache_set:set"]))
-
-
 (defrecord Cache [cache-prefix entry-factory pool executor encode decode client-id listeners on-close init-wait-ms max-wait-ms factory-defaults]
   java.io.Closeable
   (close [_]
@@ -82,7 +82,7 @@
                               (onMessage [_ message]
                                 (let [key (subs message cache-prefix-len)]
                                   (notify-listeners listeners key))))
-          fut       (async executor (fn [] (.subscribe client pubsub dcache-set-channel-name)))]
+          fut       (supply-async executor (fn [] (.subscribe client pubsub dcache-set-channel-name)))]
       (map->Cache {:cache-prefix     cache-prefix
                    :entry-factory    entry-factory
                    :pool             pool
@@ -102,8 +102,8 @@
 
 
 (defn halt [^Cache cache]
-  (when-let [on-close (.on-close cache)]
-    (on-close)))
+  (when cache
+    (.close cache)))
 
 
 ;;
@@ -111,6 +111,10 @@
 ;; ==============
 ;;
 
+
+;;
+;; Wrappers for calling dcache Redis functions:
+;;
 
 (defn- fcall [^JedisPool pool fname key args]
   (with-open [client (.getResource pool)]
@@ -136,18 +140,24 @@
           (str stale)
           (str expire)]))
 
+;;
+;; Invoking cache value factory:
+;;
+
 
 (defn- make-entry ^Future [^Cache cache key]
-  (async (.executor cache)
-         (fn []
-           (let [entry-factory (.entry-factory cache)
-                 entry         (merge (.factory-defaults cache)
-                                      (entry-factory key))]
-             (when-not (:stale entry)  (throw (ex-info "factory result missing :stale" {})))
-             (when-not (:expire entry) (throw (ex-info "factory result missing :expire" {})))
-             (when-not (:value entry)  (throw (ex-info "factory result missing :value" {})))
-             (dcache-set cache key entry)
-             entry))))
+  (supply-async (.executor cache)
+                (fn []
+                  (let [entry-factory (.entry-factory cache)
+                        entry         (merge (.factory-defaults cache)
+                                             (entry-factory key))]
+                    (when (= (dcache-set cache key entry) "OK")
+                      entry)))))
+
+
+;;
+;; dcache_get loop:
+;;
 
 
 (defn- do-get [^Cache cache key]
@@ -157,11 +167,13 @@
         "OK"      value
         "STALE"   (do (make-entry cache key)
                       value)
-        "MISS"    (->> (make-entry cache key)
-                       (.get)
-                       :value)
+        "MISS"    (-> (make-entry cache key)
+                      (.get)
+                      :value
+                      (or (recur (.init-wait-ms cache))))
         "PENDING" (do (wait-for (.listeners cache) key wait-ms)
-                      (recur (min (* wait-ms 2) (.max-wait-ms cache))))))))
+                      (recur (min (* wait-ms 2) 
+                                  (.max-wait-ms cache))))))))
 
 
 ;;
@@ -171,9 +183,9 @@
 
 
 (defn get ^CompletableFuture [^Cache cache key]
-  (async (.executor cache) 
-         (fn [] 
-           (do-get cache key))))
+  (supply-async (.executor cache)
+                (fn []
+                  (do-get cache key))))
 
 
 ;;
@@ -204,6 +216,9 @@
   @(get cache "foo")
   ;;=> "value for foo"
 
+  (dcache-set cache "fofo" {:value "value"
+                            :stale "1000"
+                            :expire "2000"})
   ;
   )
 

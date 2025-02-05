@@ -184,11 +184,21 @@ end
 ]]
 
 redis.register_function("dcache_set", function(keys, args)
-  local key    = keys[1]
-  -- local client_id = args[1]  ; This is un-used now, but good to have for possible future use
-  local value  = args[2]
-  local stale  = args[3]
-  local expire = args[4]
+  local key       = keys[1]
+  local client_id = args[1]
+  local value     = args[2]
+  local stale     = args[3]
+  local expire    = args[4]
+
+  -- If client is not the elected leader, return immediatelly with
+  -- status "CONFLICT":
+
+  if redis.call("HGET", key, "leader") ~= client_id then
+    return "CONFLICT"
+  end
+
+  -- Client is the leader, save the value to cache, mark it a fresh, remove
+  -- leader and set expirations, and return "OK":
 
   redis.call("HSET", key,
     "value", value,                                          -- Save the value

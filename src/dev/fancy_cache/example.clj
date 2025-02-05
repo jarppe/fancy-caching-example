@@ -8,13 +8,13 @@
 ;; We need a Redis connection pool and executor. The executor is used for
 ;; background refresh operations:
 
-(def redis-pool (JedisPool. (HostAndPort. "127.0.0.1" 6379)
-                            (-> (DefaultJedisClientConfig/builder)
-                                (.clientName "fancy-caching-example")
-                                (.resp3)
-                                (.build))))
+(defonce redis-pool (JedisPool. (HostAndPort. "127.0.0.1" 6379)
+                                (-> (DefaultJedisClientConfig/builder)
+                                    (.clientName "fancy-caching-example")
+                                    (.resp3)
+                                    (.build))))
 
-(def executor (Executors/newVirtualThreadPerTaskExecutor))
+(defonce executor (Executors/newVirtualThreadPerTaskExecutor))
 
 ;; We need a function that can create a value for cache. This is called in cache
 ;; misses, and also when we do stale-while-revalidate thing:
@@ -28,7 +28,7 @@
    :stale  1000                        ;; Value becomes stale in 1 sec
    :expire 2000})                      ;; Value expires is 2 sec
 
-;; Create the cache instance:
+;; Create the cache instance, refresh in every reload of this ns:
 
 (def cache nil)
 (alter-var-root #'cache (fn [cache]
@@ -37,7 +37,6 @@
                           (cache/init {:entry-factory cached-value-factory
                                        :pool          redis-pool
                                        :executor      executor})))
-
 
 
 (comment
