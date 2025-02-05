@@ -1,11 +1,14 @@
 (ns fancy-caching-example.stale-while-refresh
   (:refer-clojure :rename {get cget})
   (:require [clojure.java.io :as io])
-  (:import (java.util.concurrent ExecutorService
+  (:import (java.util.function Supplier)
+           (java.util.concurrent Executor
                                  Executors
+                                 ExecutorService 
                                  Future
                                  CompletableFuture)
            (redis.clients.jedis JedisPool
+                                JedisPubSub
                                 HostAndPort
                                 DefaultJedisClientConfig)
            (redis.clients.jedis.commands FunctionCommands)))
@@ -15,34 +18,92 @@
 
 
 ;;
+;; Helpers:
+;;
+
+
+(defn- async ^CompletableFuture [^Executor executor ^Supplier task]
+  (CompletableFuture/supplyAsync task executor))
+
+
+;;
+;; Listeners support:
+;;
+
+
+(defrecord Listener [key promise]
+  java.lang.Object
+  (toString [_] (str "Listener:[" (pr-str key) "]")))
+
+
+(defn- notify-listeners [listeners key]
+  (doseq [^Listener listener @listeners]
+    (when (= (.key listener) key)
+      (deliver (.promise listener) listener))))
+
+
+(defn- wait-for [listeners key timeout]
+  (let [p (promise)]
+    (vswap! listeners conj (Listener. key p))
+    (deref p timeout ::ignored)
+    (vswap! listeners (partial remove (fn [^Listener listener] (identical? (.promise listener) p))))))
+
+
+;;
 ;; Cache life-cycle:
 ;; =================
 ;;
 
 
-(defn init [{:keys [entry-factory pool executor encode decode]}]
-  (assert (fn? entry-factory) "entry-factory is required")
-  (assert (instance? JedisPool pool) "pool is required")
-  (assert (instance? ExecutorService executor) "executor is required")
-  (assert (or (nil? encode) (fn? encode)) "encode is must be a fn")
-  (assert (or (nil? decode) (fn? decode)) "decode is must be a fn")
-  ;; Load dcache library:
-  (with-open [c  (.getResource ^JedisPool pool)
-              in (-> (io/resource "fancy_caching_example/dcache.lua")
-                     (io/input-stream))]
-    (.functionLoadReplace c (.readAllBytes in)))
-  ;; Return cache "context"
-  {:entry-factory entry-factory
-   :encode        encode
-   :decode        decode
-   :pool          pool
-   :executor      executor
-   :client-id     (str (java.util.UUID/randomUUID))})
+(def ^:private ^String/1 dcache-set-channel-name (into-array String ["dcache_set:set"]))
 
 
-(defn halt [_cache]
-  ; Nothing to cleanup
-  )
+(defrecord Cache [cache-prefix entry-factory pool executor encode decode client-id listeners on-close init-wait-ms max-wait-ms factory-defaults]
+  java.io.Closeable
+  (close [_]
+    (on-close)))
+
+
+(defn init [config]
+  (let [{:keys [cache-name entry-factory pool executor encode decode]} config]
+    (assert (fn? entry-factory) "entry-factory is required")
+    (assert (instance? JedisPool pool) "pool is required")
+    (assert (instance? ExecutorService executor) "executor is required")
+    (assert (or (nil? encode) (fn? encode)) "encode is must be a fn")
+    (assert (or (nil? decode) (fn? decode)) "decode is must be a fn") 
+    (let [client            (.getResource ^JedisPool pool)
+          _                 (with-open [in (-> (io/resource "fancy_caching_example/dcache.lua")
+                                               (io/input-stream))]
+                              (.functionLoadReplace client (.readAllBytes in)))
+          listeners         (volatile! ())
+          cache-prefix      (str (or cache-name "cache") ":")
+          cache-prefix-len  (count cache-prefix)
+          pubsub            (proxy [JedisPubSub] []
+                              (onMessage [_ message]
+                                (let [key (subs message cache-prefix-len)]
+                                  (notify-listeners listeners key))))
+          fut       (async executor (fn [] (.subscribe client pubsub dcache-set-channel-name)))]
+      (map->Cache {:cache-prefix     cache-prefix
+                   :entry-factory    entry-factory
+                   :pool             pool
+                   :executor         executor
+                   :encode           encode
+                   :decode           decode
+                   :client-id        (str (java.util.UUID/randomUUID))
+                   :listeners        listeners
+                   :init-wait-ms     (:init-wait-ms config 2)
+                   :max-wait-ms      (:max-wait-ms config 1000)
+                   :factory-defaults {:stale  (:default-stale config)
+                                      :expire (:default-expire config)}
+                   :on-close         (fn []
+                                       (.unsubscribe pubsub)
+                                       (.get fut)
+                                       (.close client))}))))
+
+
+(defn halt [^Cache cache]
+  (when-let [on-close (.on-close cache)]
+    (on-close)))
 
 
 ;;
@@ -51,44 +112,47 @@
 ;;
 
 
-(defn- fcall [{:keys [^JedisPool pool]} fname keys args]
-  (with-open [c (.getResource pool)]
-    (.fcall ^FunctionCommands c fname keys args)))
+(defn- fcall [^JedisPool pool fname key args]
+  (with-open [client (.getResource pool)]
+    (.fcall ^FunctionCommands client fname [key] args)))
 
 
-(defn- dcache-get [cache key]
-  (let [resp   (fcall cache "dcache_get" [(str key)] [(:client-id cache)])
-        decode (-> cache :decode)]
+(defn- dcache-get [^Cache cache key]
+  (let [resp   (fcall (.pool cache) "dcache_get" (str (.cache-prefix cache) key) [(.client-id cache)])
+        decode (.decode cache)]
     (if (and (contains? resp :value) decode)
       (update resp :value decode)
       resp)))
 
 
-(defn- dcache-set [cache key {:keys [value stale expire]}]
-  (fcall cache
+(defn- dcache-set [^Cache cache key {:keys [value stale expire]}]
+  (fcall (.pool cache)
          "dcache_set"
-         [(str key)]
-         [(:client-id cache)
-          (if-let [encode (-> cache :encode)]
+         (str (.cache-prefix cache) key)
+         [(.client-id cache)
+          (if-let [encode (.encode cache)]
             (encode value)
             value)
           (str stale)
           (str expire)]))
 
 
-(defn- make-entry ^Future [cache key]
-  (let [executor      (-> cache :executor)
-        entry-factory (-> cache :entry-factory)
-        task          (fn []
-                        (let [entry (entry-factory key)]
-                          (dcache-set cache key entry)
-                          entry))]
-    (.submit ^ExecutorService executor ^Callable task)))
+(defn- make-entry ^Future [^Cache cache key]
+  (async (.executor cache)
+         (fn []
+           (let [entry-factory (.entry-factory cache)
+                 entry         (merge (.factory-defaults cache)
+                                      (entry-factory key))]
+             (when-not (:stale entry)  (throw (ex-info "factory result missing :stale" {})))
+             (when-not (:expire entry) (throw (ex-info "factory result missing :expire" {})))
+             (when-not (:value entry)  (throw (ex-info "factory result missing :value" {})))
+             (dcache-set cache key entry)
+             entry))))
 
 
-(defn- do-get [cache key]
-  (loop [wait-ms 2]
-    (let [{:strs [status value]} (dcache-get cache key)]
+(defn- do-get [^Cache cache key]
+  (loop [wait-ms (.init-wait-ms cache)]
+    (let [{:strs [status value]} (dcache-get cache key)] 
       (case status
         "OK"      value
         "STALE"   (do (make-entry cache key)
@@ -96,8 +160,8 @@
         "MISS"    (->> (make-entry cache key)
                        (.get)
                        :value)
-        "PENDING" (do (Thread/sleep wait-ms)
-                      (recur (min (* wait-ms 2) 1000)))))))
+        "PENDING" (do (wait-for (.listeners cache) key wait-ms)
+                      (recur (min (* wait-ms 2) (.max-wait-ms cache))))))))
 
 
 ;;
@@ -106,9 +170,10 @@
 ;;
 
 
-(defn get ^CompletableFuture [cache key]
-  (let [^ExecutorService executor (-> cache :executor)]
-    (CompletableFuture/supplyAsync (fn [] (do-get cache key)) executor)))
+(defn get ^CompletableFuture [^Cache cache key]
+  (async (.executor cache) 
+         (fn [] 
+           (do-get cache key))))
 
 
 ;;
@@ -126,10 +191,9 @@
 
   (def cache (init {:entry-factory (fn [key]
                                      (println "entry-factory:" key)
-                                     (let [now (System/currentTimeMillis)]
-                                       {:value  (str "value for " key)
-                                        :stale  (+ now 1000)
-                                        :expire (+ now 2000)}))
+                                     {:value  (str "value for " key)
+                                      :stale  1000
+                                      :expire 2000})
                     :pool          pool
                     :executor      executor}))
 

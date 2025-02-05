@@ -36,13 +36,13 @@ Not quite so fast. This is just an experimentation. There are some open question
 
 ## Considerations for future
 
-- [ ] Add cache a name and use that name as prefix to allow deploying multiple cache instance in same database
-- [ ] Add possibility to set default stale and expire times for cache instances so that factories do not need to produce them
-- [ ] Consider publishing a cache updated message when dcache_set is called
-- [ ] Consider detecting cache updated messages in client when waiting
+- [⎷] Add cache a name and use that name as prefix to allow deploying multiple cache instance in same database
+- [⎷] Add possibility to set default stale and expire times for cache instances so that factories do not need to produce them
+- [⎷] Consider publishing a cache updated message when dcache_set is called
+- [⎷] Consider detecting cache updated messages in client when waiting
 - [ ] Improve data consistency by providing means to remove updated values from local caches when cache update message is received
 - [ ] Consider rejecting dcache_set calls from clients that are not currently leaders (see [this](#handling-update-conflicts))
-- [ ] Consider changeing stale and expiration times from absolute times to relative to handle possible clock differences between client and redis instance
+- [⎷] Consider using relative times for stale and expiration times handle possible clock differences between client and redis instance
 - [ ] Run performance analysis and do stress testing
 
 ### Handling update conflicts

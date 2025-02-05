@@ -24,20 +24,25 @@
   ;; Typically this makes query to DB etc. Here we simulate that with 0.5 sec sleep.
   (Thread/sleep 500)
   ;; Return a map with three elements:
-  (let [now (System/currentTimeMillis)]
-    {:value  (str "value for key " key)  ;; The value to be cached
-     :stale  (+ now 1000)                ;; When the value becomes stale
-     :expire (+ now 2000)}))             ;; When the valye expires
+  {:value  (str "value for key " key)  ;; The value to be cached
+   :stale  1000                        ;; Value becomes stale in 1 sec
+   :expire 2000})                      ;; Value expires is 2 sec
 
 ;; Create the cache instance:
 
-(def cache (cache/init {:entry-factory cached-value-factory
-                        :pool          redis-pool
-                        :executor      executor}))
+(def cache nil)
+(alter-var-root #'cache (fn [cache]
+                          (when cache
+                            (cache/halt cache))
+                          (cache/init {:entry-factory cached-value-factory
+                                       :pool          redis-pool
+                                       :executor      executor})))
 
 
 
 (comment
+
+  (java.util.Locale/setDefault (java.util.Locale/of "us" "EN"))
 
   ;; The only api we have is the cache creation `cache/init` and the `cache/get`. Let's examine
   ;; the get function:
@@ -70,13 +75,13 @@
 
   ;=> prints:
   ; cached-value-factory: creating value for key [foo]
-  ; got value [value for key foo] from cache in 0.517 sec
+  ; got value [value for key foo] from cache in 0.509 sec
   ; got value [value for key foo] from cache in 0.001 sec
-  ; got value [value for key foo] from cache in 0.001 sec
+  ; got value [value for key foo] from cache in 0.002 sec
   ; got value [value for key foo] from cache in 0.001 sec
   ; got value [value for key foo] from cache in 0.001 sec
 
-  ;; Notice that the first time we got value from cache in 0.517 sec, because the
+  ;; Notice that the first time we got value from cache in 0.509 sec, because the
   ;; factory took 500 ms. Rest of the calls come fast.
 
   ;; Try to hit cache between stale and expiration to see if we can
@@ -100,7 +105,3 @@
   ;;    the background refresh
   ;;
   )
-
-(comment
-  (with-open [c (.getResource redis-pool)]
-    (.eval c "redis.setresp(3) return {map = {t = table.unpack(redis.call(\"TIME\"))}}")))

@@ -82,8 +82,8 @@ redis.register_function("dcache_get", function(keys, args)
   --   using 'redis.dcache_set'.
 
   if value == nil and leader == nil then
-    redis.call("HSET", key, "leader", client_id)
-    redis.call("PEXPIRE", key, miss_timeout)
+    redis.call("HSET", key, "leader", client_id) -- Add hash with just the leader
+    redis.call("PEXPIRE", key, miss_timeout)     -- Set the hash to expire at miss-timeout
     return {
       map = {
         status = "MISS"
@@ -118,13 +118,11 @@ redis.register_function("dcache_get", function(keys, args)
   --   immediatelly, but that it should also refresh the value and set it
   --   using 'redis.dcache_set'.
 
-  local stale = tonumber(entry["stale"])
-  local time = redis.call("TIME")
-  local now = math.floor((tonumber(time[1]) * 1000) + (tonumber(time[2]) / 1000))
+  local stale = entry["fresh"] == nil -- Entry is stale if the "fresh" key has expired
 
-  if now > stale and leader == nil then
-    redis.call("HSET", key, "leader", client_id)
-    redis.call("HPEXPIRE", key, stale_timeout, "FIELDS", "1", "leader")
+  if stale and leader == nil then
+    redis.call("HSET", key, "leader", client_id)                        -- Set the leader
+    redis.call("HPEXPIRE", key, stale_timeout, "FIELDS", "1", "leader") -- Set leader to expire ar stale_timeout
     return {
       map = {
         status = "STALE",
@@ -133,9 +131,9 @@ redis.register_function("dcache_get", function(keys, args)
     }
   end
 
-  -- CASE 4: Cache hit, we have value and it's not stale:
+  -- CASE 4: Cache hit, we have value and it's either not stale, or
+  --         it is stale but has a leader elected.
   --
-  --   We have a valid value that is not about to become expired.
   --   Return "OK".
 
   return {
@@ -161,12 +159,12 @@ end
                   this key on start-up.
     <value>       New value for cache entry.
     <stale>       Timestamp when cached value becomes stale. After the value
-                  becomes stale it can still be used, but a background refresh
-                  is started. Expressed as milliseconds from Unix epoch.
+                  becomes stale it can still be used, but a background refresh is
+                  started. Expressed as relative milliseconds from current time.
     <expire>      Timestamp when cached value is expired. After the expiration
                   the cached value is not available any more, and a new value
                   must be generated if entry is requested. Expressed as
-                  milliseconds from Unix epoch.
+                  relative milliseconds from current time.
 
   If the caller called `dcache_get` and the response status was either `"STALE"` or `"MISS"`,
   then the caller is expected to produce an updated value for cache entry. Once the value is
@@ -193,11 +191,12 @@ redis.register_function("dcache_set", function(keys, args)
   local expire = args[4]
 
   redis.call("HSET", key,
-    "value", value,
-    "stale", stale,
-    "expire", expire)
-  redis.call("HDEL", key, "leader")
-  redis.call("PEXPIREAT", key, expire)
+    "value", value,                                          -- Save the value
+    "fresh", "t")                                            -- Add flag to indicate freshness
+  redis.call("HDEL", key, "leader")                          -- Remove leader
+  redis.call("HPEXPIRE", key, stale, "FIELDS", "1", "fresh") -- Set the "fresh" to expire at stale time
+  redis.call("PEXPIRE", key, expire)                         -- Set the entry to expire at expire time
+  redis.call("PUBLISH", "dcache_set:set", key)               -- Publish cache update
 
   return "OK"
 end
