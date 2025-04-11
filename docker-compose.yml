@@ -3,5 +3,12 @@ services:
   redis:
     image: redis:7-alpine
     init: true
-    ports:
-      - "127.0.0.1:6379:6379"
+
+  devcontainer:
+    image: jarppe/clj-devcontainer:latest
+    restart: always
+    volumes:
+      - .:/home/${USER}/workspace
+    environment:
+      - TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal
+    command: "sleep infinity"

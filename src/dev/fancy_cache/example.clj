@@ -8,7 +8,7 @@
 ;; We need a Redis connection pool and executor. The executor is used for
 ;; background refresh operations:
 
-(defonce redis-pool (JedisPool. (HostAndPort. "127.0.0.1" 6379)
+(defonce redis-pool (JedisPool. (HostAndPort. "redis" 6379)
                                 (-> (DefaultJedisClientConfig/builder)
                                     (.clientName "fancy-caching-example")
                                     (.resp3)

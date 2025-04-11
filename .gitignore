@@ -1,9 +1,12 @@
 *
 
+!/.devcontainer/
+!/.devcontainer/**
 !/src/
 !/src/**
 !/.cljfmt.edn
 !/.gitignore
+!/bb.edn
 !/deps.edn
 !/docker-compose.yml
 !/README.md

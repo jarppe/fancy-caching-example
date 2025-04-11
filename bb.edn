@@ -1,0 +1,32 @@
+{:tasks {:requires        ([babashka.fs :as fs]
+                           [babashka.process :as p])
+
+         dev:up           {:doc  "Start dev services"
+                           :task (p/exec "docker compose up -d")}
+
+         dev:logs         {:doc  "Start dev services"
+                           :task (p/exec "docker compose logs -f")}
+
+         dev:down         {:doc  "Stop dev services"
+                           :task (p/exec "docker compose down --remove-orphans")}
+
+         dev:clean        {:doc  "Clean dev services"
+                           :task (p/exec "docker compose down --remove-orphans --volumes")}
+
+         dev:sources      {:doc  "Download dependency sources"
+                           :task (do (p/shell "clj -X:deps mvn-pom :aliases '[:dev :test]'")
+                                     (p/shell "mvn dependency:sources dependency:resolve -Dclassifier=javadoc")
+                                     (p/shell "rm pom.xml"))}
+
+         dev:outdated     {:doc      "Check for outdated Clojure deps"
+                           :requires ([babashka.process :as p])
+                           :task     (p/exec "clj -M:outdated")}
+
+         test:all         {:doc  "Run all tests"
+                           :task (apply clojure "-M:test" "-m" "kaocha.runner" *command-line-args*)}
+
+         test:unit        {:doc  "Run unit tests"
+                           :task (apply clojure "-M:test" "-m" "kaocha.runner" "--focus" ":unit" *command-line-args*)}
+
+         test:integration {:doc  "Run integrations tests"
+                           :task (apply clojure "-M:test" "-m" "kaocha.runner" "--focus" ":integration" *command-line-args*)}}}

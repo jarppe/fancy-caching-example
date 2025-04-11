@@ -1,0 +1,14 @@
+{
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "devcontainer",
+  "workspaceFolder": "/home/${localEnv:USER}/workspace",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "betterthantomorrow.calva",
+        "aaron-bond.better-comments",
+        "TomPollak.lazygit-vscode"
+      ]
+    }
+  }
+}

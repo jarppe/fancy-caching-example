@@ -194,7 +194,8 @@
 
 
 (comment
-  (def pool (JedisPool. (HostAndPort. "127.0.0.1" 6379)
+
+  (def pool (JedisPool. (HostAndPort. "redis" 6379)
                         (-> (DefaultJedisClientConfig/builder)
                             (.clientName "fancy-caching-example")
                             (.resp3)
@@ -216,8 +217,8 @@
   @(get cache "foo")
   ;;=> "value for foo"
 
-  (dcache-set cache "fofo" {:value "value"
-                            :stale "1000"
+  (dcache-set cache "fofo" {:value  "value"
+                            :stale  "1000"
                             :expire "2000"})
   ;
   )

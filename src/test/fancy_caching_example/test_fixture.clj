@@ -13,7 +13,7 @@
 
 (defn with-pool []
   (fn [f]
-    (with-open [pool     (JedisPool. (HostAndPort. "127.0.0.1" 6379)
+    (with-open [pool     (JedisPool. (HostAndPort. "redis" 6379)
                                      (-> (DefaultJedisClientConfig/builder)
                                          (.clientName "fancy-caching-example-test")
                                          (.resp3)
