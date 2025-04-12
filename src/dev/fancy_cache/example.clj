@@ -1,5 +1,5 @@
 (ns fancy-cache.example
-  (:require [fancy-caching-example.stale-while-refresh :as cache])
+  (:require [fancy-caching-example.cache :as cache])
   (:import (redis.clients.jedis JedisPool
                                 HostAndPort
                                 DefaultJedisClientConfig)

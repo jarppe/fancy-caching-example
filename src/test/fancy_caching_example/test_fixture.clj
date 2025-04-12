@@ -1,5 +1,5 @@
 (ns fancy-caching-example.test-fixture
-  (:require [fancy-caching-example.stale-while-refresh :as cache])
+  (:require [fancy-caching-example.cache :as cache])
   (:import (redis.clients.jedis JedisPool
                                 HostAndPort
                                 DefaultJedisClientConfig)
@@ -31,9 +31,7 @@
         (f)))))
 
 
-(defn make-cache [factory-or-config]
+(defn make-cache [config]
   (cache/init (merge {:pool     *pool*
                       :executor *executor*}
-                     (if (fn? factory-or-config)
-                       {:entry-factory factory-or-config}
-                       factory-or-config))))
+                     config)))

@@ -64,13 +64,13 @@ local stale_timeout = "1000"
 ]]
 
 redis.register_function("dcache_get", function(keys, args)
-  local key = keys[1]
+  local key       = keys[1]
   local client_id = args[1]
 
   redis.setresp(3)
 
-  local entry = redis.call("HGETALL", key)["map"]
-  local value = entry["value"]
+  local entry  = redis.call("HGETALL", key)["map"]
+  local value  = entry["value"]
   local leader = entry["leader"]
 
   -- CASE 1: Cache entry has no value and no leader:
@@ -78,8 +78,8 @@ redis.register_function("dcache_get", function(keys, args)
   --   Save the client as a leader. Set the whole HASH to expire in miss_timeout so
   --   that if the leader fails the whole HASH is expunged.
   --
-  --   Return "MISS" so that client knows it is expected to produce a value
-  --   using 'redis.dcache_set'.
+  --   Return "MISS" so that client knows it is expected to produce a value and set
+  --   it using 'redis.dcache_set'.
 
   if value == nil and leader == nil then
     redis.call("HSET", key, "leader", client_id) -- Add hash with just the leader
@@ -108,19 +108,20 @@ redis.register_function("dcache_get", function(keys, args)
 
   -- CASE 3: Cache hit, but value is getting stale, and there's no leader:
   --
-  --   We found valid value, but it should be refreshed.
+  --   This means that we found valid value from cache, but it should be 
+  --   refreshed.
   --
   --   Assign the client as leader and set the leader entry expiration to
-  --   stale_timeout, so that if the client fails the leader entry is expunged
-  --   and we get to elect a new leader.
+  --   stale_timeout, so that if the client fails then the leader entry is 
+  --   expunged and we get to elect a new leader on next call.
   --
-  --   Return "STALE" so that the client known it can use the returned value
-  --   immediatelly, but that it should also refresh the value and set it
-  --   using 'redis.dcache_set'.
+  --   Return "STALE" so that the client knows it can use the returned value
+  --   immediatelly, but that it should also refresh the value in background
+  --   and set it using 'redis.dcache_set'.
 
-  local stale = entry["fresh"] == nil -- Entry is stale if the "fresh" key has expired
+  local is_stale = entry["fresh"] == nil -- Entry is stale if the "fresh" key has expired
 
-  if stale and leader == nil then
+  if is_stale and leader == nil then
     redis.call("HSET", key, "leader", client_id)                        -- Set the leader
     redis.call("HPEXPIRE", key, stale_timeout, "FIELDS", "1", "leader") -- Set leader to expire ar stale_timeout
     return {
@@ -131,8 +132,8 @@ redis.register_function("dcache_get", function(keys, args)
     }
   end
 
-  -- CASE 4: Cache hit, we have value and it's either not stale, or
-  --         it is stale but has a leader elected.
+  -- CASE 4: Cache hit, we have value and it's not stale, or it is stale 
+  --         but has a leader elected.
   --
   --   Return "OK".
 
@@ -197,17 +198,26 @@ redis.register_function("dcache_set", function(keys, args)
     return "CONFLICT"
   end
 
-  -- Client is the leader, save the value to cache, mark it a fresh, remove
-  -- leader and set expirations, and return "OK":
+  -- We are the leader, and this is where value is set, so remove leader status:
+  redis.call("HDEL", key, "leader")
 
+  -- Save the value to cache, mark it a fresh:
   redis.call("HSET", key,
-    "value", value,                                          -- Save the value
-    "fresh", "t")                                            -- Add flag to indicate freshness
-  redis.call("HDEL", key, "leader")                          -- Remove leader
-  redis.call("HPEXPIRE", key, stale, "FIELDS", "1", "fresh") -- Set the "fresh" to expire at stale time
-  redis.call("PEXPIRE", key, expire)                         -- Set the entry to expire at expire time
-  redis.call("PUBLISH", "dcache_set:set", key)               -- Publish cache update
+    "value", value,
+    "fresh", "t")
+  
+  -- Set the entry to expire at expire time:
+  redis.call("PEXPIRE", key, expire)
 
+  -- If stale is specified, set the "fresh" field to expire at stale time:
+  if stale ~= "-1" then
+    redis.call("HPEXPIRE", key, stale, "FIELDS", "1", "fresh")
+  end 
+
+  -- Publish cache update:
+  redis.call("PUBLISH", "dcache_set:set", key)                  
+
+  -- Successful, return "OK":
   return "OK"
 end
 )

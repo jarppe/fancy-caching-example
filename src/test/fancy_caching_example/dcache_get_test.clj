@@ -1,5 +1,5 @@
 (ns fancy-caching-example.dcache-get-test
-  (:require [fancy-caching-example.stale-while-refresh :as cache]
+  (:require [fancy-caching-example.cache :as cache]
             [clojure.test :refer [deftest is use-fixtures testing]]
             [matcher-combinators.test]
             [fancy-caching-example.test-fixture :as f :refer [*client* make-cache]]))
@@ -22,9 +22,9 @@
       (testing "in cold cache"
         (testing "response status is MISS"
           (is (= {"status" "MISS"} (dcache-get cache key))))
-        (testing "Only the leader is set"
+        (testing "leader is set"
           (is (= {"leader" (.client-id cache)} (.hgetAll *client* full-key))))
-        (testing "The hash is set to expire in 1 sec"
+        (testing "The hash is set to expire in ~1 sec"
           (let [should-expire-at (+ (System/currentTimeMillis) 1000)]
             (is (< (- should-expire-at 10)
                    (.pexpireTime *client* full-key)
@@ -35,9 +35,7 @@
           (is (= {"status" "PENDING"}
                  (dcache-get cache key)))))
 
-      (dcache-set cache key {:value  "value"
-                             :stale  "50"
-                             :expire "150"})
+      (dcache-set cache key "value" 50 150)
 
       (testing "now entry is set and fresh and"
         (testing "leader is not set"
