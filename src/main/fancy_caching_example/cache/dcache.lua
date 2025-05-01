@@ -70,8 +70,6 @@ redis.register_function("dcache_get", function(keys, args)
   redis.setresp(3)
 
   local entry  = redis.call("HGETALL", key)["map"]
-  local value  = entry["value"]
-  local leader = entry["leader"]
 
   -- CASE 1: Cache entry has no value and no leader:
   --
@@ -80,6 +78,9 @@ redis.register_function("dcache_get", function(keys, args)
   --
   --   Return "MISS" so that client knows it is expected to produce a value and set
   --   it using 'redis.dcache_set'.
+
+  local value  = entry["value"]
+  local leader = entry["leader"]
 
   if value == nil and leader == nil then
     redis.call("HSET", key, "leader", client_id) -- Add hash with just the leader
@@ -215,7 +216,7 @@ redis.register_function("dcache_set", function(keys, args)
   end 
 
   -- Publish cache update:
-  redis.call("PUBLISH", "dcache_set:set", key)                  
+  redis.call("PUBLISH", "dcache_set:set:" .. key, value)                  
 
   -- Successful, return "OK":
   return "OK"

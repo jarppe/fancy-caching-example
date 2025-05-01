@@ -13,26 +13,111 @@
 (set! *warn-on-reflection* true)
 
 
+;; Returns a function that accepts a cache-key, calls Redis function `dcache_get`, and
+;; returns a vector with status and cache value:
+
+(defn- make-dcache-get [{:keys [pool cache-name client-id decode]}]
+  (fn [cache-key]
+    (let [^java.util.Map resp   (dcache/fcall pool
+                                              "dcache_get"
+                                              (str cache-name ":" cache-key)
+                                              [client-id])
+          status (.get resp "status")
+          value  (.get resp "value")]
+      [status (when value (decode value))])))
+
+
+;; Returns a function that accepts cache-key, new value, a stale and expire times. The
+;; returned function calls the Redis `dcache_set` function with these values and returns
+;; the status:
+
+(defn- make-dcache-set [{:keys [pool cache-name client-id encode]}]
+  (fn [cache-key value stale expire]
+    (dcache/fcall pool
+                  "dcache_set"
+                  (str cache-name ":" cache-key)
+                  [client-id
+                   (encode value)
+                   (str stale)
+                   (str expire)])))
+
+
+;; Returns a function that accepts a cache-key for new cache entry. The returned function
+;; then invokes the entiry-factory to create new value for cache key, and then calls
+;; the `dcache-set` function to set the valye on Redis. If the value is successfully
+;; set in Redis, returns the new value. If the Redis rejected the value, returns `nil`:
+
+
+(defn- make-new-entry [{:keys [entry-factory default-stale-ms default-expire-ms]} dcache-set]
+  (fn [cache-key]
+    (let [value  (entry-factory cache-key)
+          stale  (or (-> value (meta) :stale) default-stale-ms -1)
+          expire (or (-> value (meta) :expire) default-expire-ms)]
+      (when (nil? value)  (throw (ex-info "value can not be nil" {})))
+      (when (nil? expire) (throw (ex-info "expiration time missing" {})))
+      (when (= (dcache-set cache-key value stale expire)
+               "OK")
+        value))))
+
+
+;; Returns a function that accepts cache-key, timeout, and timeout-value. The returned
+;; function returns the value from cache. If the timeout is reached before the value
+;; is available returns timeout-value. If timeout is `nil` then retries until thread 
+;; is interrupted:
+
+(defn- make-get-cache-value [{:keys [init-wait-ms max-wait-ms ^Executor executor listener]
+                              :as   config}]
+  (let [dcache-get (make-dcache-get config)
+        dache-set  (make-dcache-set config)
+        new-entry  (make-new-entry config dache-set)]
+    (fn [cache-key timeout timeout-value]
+      (let [deadline (if timeout
+                       (-> (Duration/ofMillis timeout)
+                           (.toNanos)
+                           (+ (System/nanoTime)))
+                       Long/MAX_VALUE)]
+        (loop [wait-ms init-wait-ms]
+          (if (> (System/nanoTime) deadline)
+            timeout-value
+            (let [[status value] (dcache-get cache-key)]
+              (case status
+                          ;; Cache hit:
+                "OK"      value
+                          ;; Cache miss, create cache entry and try to save it to cache.
+                          ;; If successful, return the created entry. If not, try again 
+                          ;; starting with the initial wait time:
+                "MISS"    (if-let [entry (new-entry cache-key)]
+                            entry
+                            (recur init-wait-ms))
+                          ;; Cached hit, but entry it's getting stale. Return the cached value but
+                          ;; start a refresh in background:
+                "STALE"   (do (.execute executor (fn [] (new-entry cache-key)))
+                              value)
+                          ;; Cache miss, but some other client is already elected as a leader
+                          ;; and is making the entry. Wait for a while and try again:
+                "PENDING" (do (notif/wait-notification listener cache-key wait-ms)
+                              (recur (min (* wait-ms 2)
+                                          max-wait-ms)))))))))))
+
+
 ;;
-;; Cache life-cycle:
-;; =================
+;; Public API:
+;; ===========
 ;;
 
 
-(declare get)
-
-
-(deftype Cache [cache-name entry-factory pool executor encode decode client-id listeners on-close init-wait-ms max-wait-ms default-stale default-expire]
+(deftype Cache [cache-name client-id get-cache-value on-close]
   clojure.lang.ILookup
-  (valAt [this k] (get this k))
-  (valAt [this k _] (get this k))
+  (valAt [_this cache-key]   (get-cache-value cache-key nil nil))
+  (valAt [_this cache-key _] (get-cache-value cache-key nil nil))
 
   clojure.lang.IFn
-  (invoke [this k] (get this k))
-  (invoke [this k _] (get this k))
-
-  clojure.lang.Associative
-  (entryAt [this k] (clojure.lang.MapEntry. k (get this k)))
+  (invoke [_this cache-key]                       (get-cache-value cache-key nil     nil))
+  (invoke [_this cache-key timeout]               (get-cache-value cache-key timeout nil))
+  (invoke [_this cache-key timeout timeout-value] (get-cache-value cache-key timeout timeout-value))
+  (applyTo [_this seq]
+    (let [[cache-key timeout timeout-value] seq]
+      (get-cache-value cache-key timeout timeout-value)))
 
   java.io.Closeable
   (close [_] (on-close))
@@ -62,26 +147,32 @@
                     init-wait-ms 2
                     max-wait-ms  200
                     client-id    (str (java.util.UUID/randomUUID))}}]
-  (assert (string? cache-name)       "cache-name is required")
+  (assert cache-name                 "cache-name is required")
+  (assert (name cache-name)          "cache-name is named")
   (assert (fn? entry-factory)        "entry-factory is required")
   (assert (instance? JedisPool pool) "Jedis pool is required")
-  (let [listeners    (notif/notification-listeners)
-        subscription (notif/notification-subscription cache-name executor pool listeners)
-        on-close     (fn [] (.close subscription))]
-    (dcache/load-dcache-lib pool)
+  (dcache/load-dcache-lib pool)
+  (let [cache-name      (name cache-name)
+        listener        (notif/notification-listener {:cache-name cache-name
+                                                      :executor   executor
+                                                      :pool       pool})
+        get-cache-value (make-get-cache-value {:pool              pool
+                                               :cache-name        cache-name
+                                               :client-id         client-id
+                                               :decode            decode
+                                               :encode            encode
+                                               :entry-factory     entry-factory
+                                               :default-stale-ms  default-stale-ms
+                                               :default-expire-ms default-expire-ms
+                                               :init-wait-ms      init-wait-ms
+                                               :max-wait-ms       max-wait-ms
+                                               :executor          executor
+                                               :listener          listener})
+        on-close        (fn [] (notif/close listener))]
     (Cache. cache-name
-            entry-factory
-            pool
-            executor
-            encode
-            decode
             client-id
-            listeners
-            on-close
-            init-wait-ms
-            max-wait-ms
-            default-stale-ms
-            default-expire-ms)))
+            get-cache-value
+            on-close)))
 
 
 (defn close [^Cache cache]
@@ -89,91 +180,7 @@
     (.close cache)))
 
 
-;;
-;; Invoking cache value factory:
-;;
-
-
-(defn dcache-get [^Cache cache key]
-  (let [^java.util.Map resp   (dcache/fcall (.pool cache)
-                                            "dcache_get"
-                                            (str (.cache-name cache) ":" key)
-                                            [(.client-id cache)])
-        status (.get resp "status")
-        value  (.get resp "value")
-        decode (.decode cache)]
-    [status (when value (decode value))]))
-
-
-(defn dcache-set [^Cache cache key value stale expire]
-  (dcache/fcall (.pool cache)
-                "dcache_set"
-                (str (.cache-name cache) ":" key)
-                [(.client-id cache)
-                 ((.encode cache) value)
-                 (str stale)
-                 (str expire)]))
-
-
-(defn- make-and-set-entry [^Cache cache key]
-  (let [entry-factory (.entry-factory cache)
-        entry         (entry-factory key)
-        value         (or (:value entry)
-                          entry)
-        stale         (or (:stale entry)
-                          (.default-stale cache)
-                          -1)
-        expire        (or (:expire entry)
-                          (.default-expire cache))]
-    (when (nil? value)  (throw (ex-info "value can not be nil" {})))
-    (when (nil? expire) (throw (ex-info "expiration time missing" {})))
-    (when (= (dcache-set cache key value stale expire) "OK")
-      value)))
-
-
-;;
-;; Public API:
-;; ===========
-;;
-
-
-(defn get
-  ([^Cache cache cache-key] (get cache cache-key nil nil))
-  ([^Cache cache cache-key timeout] (get cache cache-key timeout nil))
-  ([^Cache cache cache-key timeout timeout-value]
-   (let [deadline (if timeout
-                    (-> (Duration/ofMillis timeout)
-                        (.toNanos)
-                        (+ (System/nanoTime)))
-                    Long/MAX_VALUE)]
-     (loop [wait-ms (.init-wait-ms cache)]
-       (if (> (System/nanoTime) deadline)
-         timeout-value
-         (let [[status value] (dcache-get cache cache-key)]
-           (case status
-             ;; Cache hit:
-             "OK"      value
-             ;; Cache miss, create cache entry and try to save it to cache.
-             ;; If successful, return the created entry. If not, try again 
-             ;; starting with the initial wait time:
-             "MISS"    (if-let [entry (make-and-set-entry cache cache-key)]
-                         entry
-                         (recur (.init-wait-ms cache)))
-             ;; Cached hit, but entry it's getting stale. Return the cached value but
-             ;; start a refresh in background:
-             "STALE"   (let [^Executor executor (.executor cache)]
-                         (.execute executor (fn [] (make-and-set-entry cache cache-key)))
-                         value)
-             ;; Cache miss, but some other client is already elected as a leader
-             ;; and is making the entry. Wait for a while and try again:
-             "PENDING" (do (notif/wait-notification (.listeners cache) cache-key wait-ms)
-                           (recur (min (* wait-ms 2)
-                                       (.max-wait-ms cache)))))))))))
-
-
-;;
 ;; Experimenting:
-;;
 
 
 (comment
@@ -191,9 +198,10 @@
                                       :stale  1000
                                       :expire 2000})}))
 
-  (get cache "foo")
+  (cache "foo")
   ;;=> "value for foo"
-  
+
   (.close cache)
   (.close pool)
+  ;
   )

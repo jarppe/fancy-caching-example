@@ -9,6 +9,4 @@ services:
     restart: always
     volumes:
       - .:/home/${USER}/workspace
-    environment:
-      - TESTCONTAINERS_HOST_OVERRIDE=host.docker.internal
     command: "sleep infinity"
