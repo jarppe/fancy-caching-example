@@ -1,7 +1,7 @@
-(ns fancy-caching-example.cache.dcache-i-test
+(ns jarppe.cache.dcache-i-test
   (:require [clojure.test :refer [deftest is use-fixtures testing]]
-            [fancy-caching-example.cache.dcache :as dcache]
-            [fancy-caching-example.test-fixture :as f :refer [*pool* *client*]])
+            [jarppe.cache.dcache :as dcache]
+            [jarppe.test-fixture :as f :refer [*client* *pool*]])
   (:import (redis.clients.jedis JedisPubSub)))
 
 
@@ -9,7 +9,7 @@
   (f/with-pool)
   (f/with-client)
   (fn [f]
-    (dcache/load-dcache-lib *pool*)
+    (dcache/load-dcache-lib *client*)
     (f)))
 
 
@@ -24,7 +24,7 @@
     (let [key       (str (gensym "key-"))
           client-id (str (gensym "client-id-"))]
       (testing "dcache_get returns status MISS"
-        (is (= {"status" "MISS"} (dcache/fcall *pool* "dcache_get" key [client-id]))))
+        (is (= {"status" "MISS"} (dcache/fcall *client* "dcache_get" key [client-id]))))
       (testing "dcache_get set us as leader"
         (is (= {"leader" client-id} (.hgetAll *client* key))))
       (testing "dcache_get set the timeout for entry"
@@ -37,10 +37,10 @@
     (let [key       (str (gensym "key-"))
           client-id (str (gensym "client-id-"))
           leader-id (str (gensym "leader-id-"))]
-      ;; mark someone else as leader:
+        ;; mark someone else as leader:
       (.hset *client* key "leader" leader-id)
       (testing "dcache_get returns status PENDING"
-        (is (= {"status" "PENDING"} (dcache/fcall *pool* "dcache_get" key [client-id]))))))
+        (is (= {"status" "PENDING"} (dcache/fcall *client* "dcache_get" key [client-id]))))))
 
   (testing "cache hit, value stale"
     (let [key       (str (gensym "key-"))
@@ -50,7 +50,7 @@
       (testing "dcache_get returns status PENDING"
         (is (= {"status" "STALE"
                 "value"  "foo"}
-               (dcache/fcall *pool* "dcache_get" key [client-id]))))
+               (dcache/fcall *client* "dcache_get" key [client-id]))))
       (testing "dcache_get set us as leader"
         (is (= client-id (.hget *client* key "leader"))))
       (testing "dcache_set set the leader expiration"
@@ -70,7 +70,7 @@
       (testing "dcache_get returns status OK"
         (is (= {"status" "OK"
                 "value"  "foo"}
-               (dcache/fcall *pool* "dcache_get" key [client-id])))))))
+               (dcache/fcall *client* "dcache_get" key [client-id])))))))
 
 (deftest dcache_set-test
   (testing "if caller is not the leader, dcache_set returns with CONFLICT"
@@ -78,7 +78,7 @@
           client-id (str (gensym "client-id-"))
           other-id  (str (gensym "other-id-"))]
       (.hset *client* key {"leader" other-id})
-      (is (= "CONFLICT" (dcache/fcall *pool* "dcache_set" key [client-id "" "" ""])))))
+      (is (= "CONFLICT" (dcache/fcall *client* "dcache_set" key [client-id "" "" ""])))))
 
   (testing "if caller is the leader, dcache_set returns with OK"
     (let [key       (str (gensym "key-"))
@@ -87,7 +87,7 @@
           stale     100
           expire    200]
       (.hset *client* key {"leader" client-id})
-      (is (= "OK" (dcache/fcall *pool* "dcache_set" key [client-id value (str stale) (str expire)])))
+      (is (= "OK" (dcache/fcall *client* "dcache_set" key [client-id value (str stale) (str expire)])))
       (testing "value is set and it's marked as fresh"
         (is (= {"value" value
                 "fresh" "t"}
@@ -126,7 +126,7 @@
           ;; Mark this as a leader:
           (.hset *client* key {"leader" client-id})
           ;; Set the value
-          (is (= "OK" (dcache/fcall *pool* "dcache_set" key [client-id value "1" "2"])))
+          (is (= "OK" (dcache/fcall *client* "dcache_set" key [client-id value "1" "2"])))
           ;; Ensure that the message was published:
           (is (= [(str "dcache_set:set:" key) value] (deref message 1000 ::timeout)))
           ;; Cleanup:

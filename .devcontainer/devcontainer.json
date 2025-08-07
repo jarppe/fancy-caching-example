@@ -1,13 +1,19 @@
 {
   "dockerComposeFile": "../docker-compose.yml",
   "service": "devcontainer",
-  "workspaceFolder": "/home/${localEnv:USER}/workspace",
+  "workspaceFolder": "/root/workspace",
   "customizations": {
     "vscode": {
       "extensions": [
+        "docker.docker",
+        "mtxr.sqltools",
+        "mtxr.sqltools-driver-pg",
         "betterthantomorrow.calva",
+        "ecmel.vscode-html-css",
         "aaron-bond.better-comments",
-        "TomPollak.lazygit-vscode"
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "TomPollak.lazygit-vscode",
+        "reduckted.vscode-gitweblinks"
       ]
     }
   }

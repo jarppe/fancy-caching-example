@@ -1,11 +1,20 @@
-{:paths   ["src/main" "resources"]
+{:paths   ["src/main"]
  :deps    {org.clojure/clojure {:mvn/version "1.12.0"}
-           redis.clients/jedis {:mvn/version "5.2.0"}}
+           redis.clients/jedis {:mvn/version "6.0.0"}}
+ 
  :aliases {:dev  {:extra-paths ["src/dev"]
                   :extra-deps  {org.clojure/tools.namespace {:mvn/version "1.5.0"}}
                   :jvm-opts    ["-Dmode=dev"]}
+           
+           :perf {:extra-paths ["src/perf"]
+                  :extra-deps  {info.sunng/ring-jetty9-adapter {:mvn/version "0.37.4"}
+                                org.clojure/tools.logging      {:mvn/version "1.2.4"}
+                                org.slf4j/slf4j-simple         {:mvn/version "2.0.17"}
+                                org.slf4j/log4j-over-slf4j     {:mvn/version "2.0.17"}
+                                org.slf4j/jcl-over-slf4j       {:mvn/version "2.0.17"}
+                                org.slf4j/jul-to-slf4j         {:mvn/version "2.0.17"}}}
 
            :test {:extra-paths ["src/test"]
                   :extra-deps  {lambdaisland/kaocha        {:mvn/version "1.91.1392"}
                                 nubank/matcher-combinators {:mvn/version "3.9.1"}
-                                org.slf4j/slf4j-nop        {:mvn/version "2.0.16"}}}}}
+                                org.slf4j/slf4j-nop        {:mvn/version "2.0.17"}}}}}

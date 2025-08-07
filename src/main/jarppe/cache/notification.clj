@@ -1,11 +1,9 @@
-(ns fancy-caching-example.cache.notification
+(ns jarppe.cache.notification
+  (:require [jarppe.cache.util :refer [with-client with-lock async]])
   (:import (java.util List
                       LinkedList) 
-           (java.util.concurrent Executor)
-           (java.util.concurrent.locks Lock
-                                       ReentrantLock)
-           (redis.clients.jedis JedisPool
-                                JedisPubSub) 
+           (java.util.concurrent.locks ReentrantLock)
+           (redis.clients.jedis JedisPubSub) 
            (clojure.lang MapEntry)))
 
 
@@ -19,21 +17,6 @@
 
 (def ^:private dcache-channel "dcache_set:set")
 (def ^:private dcache-channel-prefix-len (count (str dcache-channel ":")))
-
-
-(defmacro ^:private with-lock [lock & body]
-  (let [the-lock (vary-meta (gensym "lock-") assoc :tag `Lock)]
-    `(let [~the-lock ~lock]
-       (.lock ~the-lock)
-       (try
-         ~@body
-         (finally
-           (.unlock ~the-lock))))))
-
-
-(defmacro ^:private async [executor & body]
-  `(.execute ~(vary-meta executor assoc :tag `Executor) 
-             (^{:once true} fn* [] ~@body)))
 
 
 (defn- notification-deliverer [^List listeners listeners-lock] 
@@ -61,7 +44,7 @@
 ;;
 
 
-(defn notification-listener [{:keys [cache-name executor pool]}]
+(defn notification-listener [{:keys [cache-name executor get-jedis-client]}]
   (let [listeners      (LinkedList.)
         listeners-lock (ReentrantLock.)
         on-message     (notification-deliverer listeners listeners-lock)
@@ -71,7 +54,7 @@
         run            (volatile! true)]
       (async executor (while @run 
                         (try 
-                          (with-open [client (.getResource ^JedisPool pool)] 
+                          (with-client [client (get-jedis-client)] 
                             (.psubscribe client pubsub ^String/1 pattern-array)) 
                           (catch Exception e 
                             (.println System/err (str "WARNING: notification-listeners/subscription: exception: "

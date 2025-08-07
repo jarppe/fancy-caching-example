@@ -18,10 +18,6 @@
                                      (p/shell "mvn dependency:sources dependency:resolve -Dclassifier=javadoc")
                                      (p/shell "rm pom.xml"))}
 
-         dev:outdated     {:doc      "Check for outdated Clojure deps"
-                           :requires ([babashka.process :as p])
-                           :task     (p/exec "clj -M:outdated")}
-
          test:all         {:doc  "Run all tests"
                            :task (apply clojure "-M:test" "-m" "kaocha.runner" *command-line-args*)}
 

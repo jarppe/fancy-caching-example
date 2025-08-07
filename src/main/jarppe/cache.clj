@@ -1,13 +1,11 @@
-(ns fancy-caching-example.cache
+(ns jarppe.cache
   (:refer-clojure :rename {get cget})
-  (:require [fancy-caching-example.cache.notification :as notif]
-            [fancy-caching-example.cache.dcache :as dcache])
+  (:require [jarppe.cache.util :as util :refer [with-client]]
+            [jarppe.cache.notification :as notif]
+            [jarppe.cache.dcache :as dcache])
   (:import (java.time Duration)
            (java.util.concurrent Executor
-                                 Executors)
-           (redis.clients.jedis JedisPool
-                                HostAndPort
-                                DefaultJedisClientConfig)))
+                                 Executors)))
 
 
 (set! *warn-on-reflection* true)
@@ -16,30 +14,34 @@
 ;; Returns a function that accepts a cache-key, calls Redis function `dcache_get`, and
 ;; returns a vector with status and cache value:
 
-(defn- make-dcache-get [{:keys [pool cache-name client-id decode]}]
+
+(defn- make-dcache-get [{:keys [get-jedis-client cache-name client-id decode]}]
   (fn [cache-key]
-    (let [^java.util.Map resp   (dcache/fcall pool
-                                              "dcache_get"
-                                              (str cache-name ":" cache-key)
-                                              [client-id])
-          status (.get resp "status")
-          value  (.get resp "value")]
-      [status (when value (decode value))])))
+    (with-client [client (get-jedis-client)]
+      (let [resp   (dcache/fcall client
+                                 "dcache_get"
+                                 (str cache-name ":" cache-key)
+                                 [client-id])
+            status (.get resp "status")
+            value  (.get resp "value")]
+        [status (when value (decode value))]))))
 
 
 ;; Returns a function that accepts cache-key, new value, a stale and expire times. The
 ;; returned function calls the Redis `dcache_set` function with these values and returns
 ;; the status:
 
-(defn- make-dcache-set [{:keys [pool cache-name client-id encode]}]
+
+(defn- make-dcache-set [{:keys [get-jedis-client cache-name client-id encode]}]
   (fn [cache-key value stale expire]
-    (dcache/fcall pool
-                  "dcache_set"
-                  (str cache-name ":" cache-key)
-                  [client-id
-                   (encode value)
-                   (str stale)
-                   (str expire)])))
+    (with-client [client (get-jedis-client)]
+      (dcache/fcall client
+                    "dcache_set"
+                    (str cache-name ":" cache-key)
+                    [client-id
+                     (encode value)
+                     (str stale)
+                     (str expire)]))))
 
 
 ;; Returns a function that accepts a cache-key for new cache entry. The returned function
@@ -132,40 +134,41 @@
 
 (defn init [{:keys [cache-name
                     entry-factory
-                    pool
+                    get-jedis-client
                     executor
                     encode
                     decode
-                    default-stale-ms
-                    default-expire-ms
-                    init-wait-ms
-                    max-wait-ms
+                    default-stale
+                    default-expire
+                    init-wait
+                    max-wait
                     client-id]
-             :or   {executor     (Executors/newVirtualThreadPerTaskExecutor)
-                    encode       str
-                    decode       identity
-                    init-wait-ms 2
-                    max-wait-ms  200
-                    client-id    (str (java.util.UUID/randomUUID))}}]
-  (assert cache-name                 "cache-name is required")
-  (assert (name cache-name)          "cache-name is named")
-  (assert (fn? entry-factory)        "entry-factory is required")
-  (assert (instance? JedisPool pool) "Jedis pool is required")
-  (dcache/load-dcache-lib pool)
+             :or   {executor  (Executors/newVirtualThreadPerTaskExecutor)
+                    encode    str
+                    decode    identity
+                    init-wait (Duration/ofMillis 2)
+                    max-wait  (Duration/ofMillis 200)
+                    client-id (str (java.util.UUID/randomUUID))}}]
+  (assert cache-name             "cache-name is required")
+  (assert (name cache-name)      "cache-name is named")
+  (assert (fn? entry-factory)    "entry-factory is required")
+  (assert (fn? get-jedis-client) "get-jedis-client is required")
+  (with-client [client (get-jedis-client)]
+    (dcache/load-dcache-lib client))
   (let [cache-name      (name cache-name)
-        listener        (notif/notification-listener {:cache-name cache-name
-                                                      :executor   executor
-                                                      :pool       pool})
-        get-cache-value (make-get-cache-value {:pool              pool
-                                               :cache-name        cache-name
+        listener        (notif/notification-listener {:cache-name       cache-name
+                                                      :executor         executor
+                                                      :get-jedis-client get-jedis-client})
+        get-cache-value (make-get-cache-value {:cache-name        cache-name
+                                               :get-jedis-client  get-jedis-client
                                                :client-id         client-id
                                                :decode            decode
                                                :encode            encode
                                                :entry-factory     entry-factory
-                                               :default-stale-ms  default-stale-ms
-                                               :default-expire-ms default-expire-ms
-                                               :init-wait-ms      init-wait-ms
-                                               :max-wait-ms       max-wait-ms
+                                               :default-stale-ms  (util/to-msec default-stale)
+                                               :default-expire-ms (util/to-msec default-expire)
+                                               :init-wait-ms      (util/to-msec init-wait)
+                                               :max-wait-ms       (util/to-msec max-wait)
                                                :executor          executor
                                                :listener          listener})
         on-close        (fn [] (notif/close listener))]
@@ -185,6 +188,10 @@
 
 (comment
 
+  (import '(redis.clients.jedis JedisPool
+                                HostAndPort
+                                DefaultJedisClientConfig))
+  
   (def pool (JedisPool. (HostAndPort. "redis" 6379)
                         (-> (DefaultJedisClientConfig/builder)
                             (.clientName "fancy-caching-example")

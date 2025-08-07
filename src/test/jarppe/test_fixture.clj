@@ -1,6 +1,6 @@
-(ns fancy-caching-example.test-fixture
+(ns jarppe.test-fixture
   (:require [clojure.string :as str]
-            [fancy-caching-example.cache :as cache])
+            [jarppe.cache :as cache])
   (:import (redis.clients.jedis JedisPool
                                 HostAndPort
                                 DefaultJedisClientConfig)
@@ -9,8 +9,7 @@
 
 (defmacro DEBUG [& args]
   (when (= (System/getProperty "mode") "dev")
-    `(.println System/err (str "DEBUG: [" (.getName *ns*) ":" ~(:line (meta &form)) "] " (str/join " " ~(vec args))))))
-
+    `(.println System/err (str "DEBUG: " (str/join " " [~@args])))))
 
 
 (def ^:dynamic *pool* nil)
@@ -33,9 +32,9 @@
         (finally
           (when (not= (try
                         (deref (future 
-                                 (DEBUG "test-fixture: Jedis pool closing")
+                                 (DEBUG "Jedis pool closing")
                                  (.close pool)
-                                 (DEBUG "test-fixture: pool closed")
+                                 (DEBUG "pool closed")
                                  ::success) 
                                1000 
                                ::timeout)
@@ -54,7 +53,10 @@
 
 
 (defn make-cache [config]
-  (cache/init (merge {:pool       *pool*
-                      :executor   *executor*
-                      :cache-name (gensym "cache-")}
-                     config)))
+  ;; It's important to capture the pool, the `get-jedis-client` is called with async and the
+  ;; dynamic bindings don't get passed there.
+  (let [pool *pool*]
+    (cache/init (merge {:get-jedis-client (fn [] (.getResource pool))
+                        :executor         *executor*
+                        :cache-name       (gensym "cache-")}
+                       config))))

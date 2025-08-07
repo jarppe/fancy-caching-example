@@ -1,9 +1,9 @@
-(ns fancy-caching-example.cache-i-test
+(ns jarppe.cache-i-test
   (:require [clojure.string :as str]
             [clojure.edn :as edn]
             [clojure.test :refer [deftest is use-fixtures testing]]
             [matcher-combinators.test]
-            [fancy-caching-example.test-fixture :as f :refer [*client* make-cache]]))
+            [jarppe.test-fixture :as f :refer [*client* make-cache]]))
 
 
 (use-fixtures :once (f/with-pool))
@@ -27,15 +27,15 @@
 
 
 (deftest cache-as-map-test
-  (with-open [cache (make-cache {:entry-factory     str/upper-case
-                                 :default-expire-ms 1})]
+  (with-open [cache (make-cache {:entry-factory  str/upper-case
+                                 :default-expire 1})]
     (is (= "FOO 1" (get cache "foo 1")))
     (is (= "FOO 2" (get cache "foo 2" 'ignored)))))
 
 
 (deftest cache-as-fn-test
-  (with-open [cache (make-cache {:entry-factory     str/upper-case
-                                 :default-expire-ms 1})]
+  (with-open [cache (make-cache {:entry-factory  str/upper-case
+                                 :default-expire 1})]
     (is (= "FOO 1" (cache "foo 1")))
     (is (= "FOO 2" (cache "foo 2" 100)))
     (is (= "FOO 3" (cache "foo 3" 100 :timeout)))))
@@ -51,10 +51,10 @@
   ;;
   ;; For testing purposes the encode and decode used in this test do not comply with
   ;; this.
-  (with-open [cache (make-cache {:entry-factory     str/upper-case
-                                 :default-expire-ms 1
-                                 :encode            (fn [v] (str "encode:" v))
-                                 :decode            (fn [v] (str "decode:" v))})]
+  (with-open [cache (make-cache {:entry-factory  str/upper-case
+                                 :default-expire 1
+                                 :encode         (fn [v] (str "encode:" v))
+                                 :decode         (fn [v] (str "decode:" v))})]
     ;; first call is MISS so call returns what ever factory returned:
     (is (= "FOO" (cache "foo")))
     ;; second call is HIT so call returns value first written to Redis via
@@ -64,11 +64,11 @@
   ;; An example of better use of encode/decode. Still, it should be noted that pr-str 
   ;; does not produce EDN with all values, for more info see this
   ;; https://nitor.com/en/articles/pitfalls-and-bumps-clojures-extensible-data-notation-edn
-  (with-open [cache (make-cache {:entry-factory     (fn [k]
-                                                      {:value (str/upper-case k)})
-                                 :encode            pr-str
-                                 :decode            edn/read-string
-                                 :default-expire-ms 1})]
+  (with-open [cache (make-cache {:entry-factory  (fn [k]
+                                                   {:value (str/upper-case k)})
+                                 :encode         pr-str
+                                 :decode         edn/read-string
+                                 :default-expire 1})]
     (is (= {:value "FOO"} (cache "foo")))
     (is (= {:value "FOO"} (cache "foo")))))
 
@@ -95,8 +95,8 @@
 
 (deftest use-default-expire-test
   (testing "default expiration provided"
-    (with-open [cache (make-cache {:entry-factory     str/upper-case
-                                   :default-expire-ms 1})]
+    (with-open [cache (make-cache {:entry-factory  str/upper-case
+                                   :default-expire 1})]
       (is (= "FOO" (cache "foo"))))))
 
 
@@ -126,15 +126,16 @@
         (is (= false
                (.exists *client* full-key)))))))
 
+
 (deftest get-refreshing-test
   (let [cache-name (name (gensym "cache-"))
         key        "key"
         full-key   (str cache-name ":" key)
         counter    (atom 0)]
-    (with-open [cache (make-cache {:cache-name        cache-name
-                                   :entry-factory     (fn [_k] (str "version " (swap! counter inc)))
-                                   :default-stale-ms  100
-                                   :default-expire-ms 200})]
+    (with-open [cache (make-cache {:cache-name     cache-name
+                                   :entry-factory  (fn [_k] (str "version " (swap! counter inc)))
+                                   :default-stale  100
+                                   :default-expire 200})]
       (testing "initially entry is not in Redis"
         (is (false? (.exists *client* full-key))))
 
@@ -185,14 +186,14 @@
         now   (fn [] (- (System/currentTimeMillis) start))
         t'    20
         T     (fn [t] (* t' t))]
-    (with-open [cache (make-cache {:cache-name        (gensym "cache-")
-                                   :init-wait-ms      (- (T 3) (T 1))
-                                   :max-wait-ms       (- (T 3) (T 1))
-                                   :entry-factory     (fn [k]
-                                                        (Thread/sleep (- (T 2) (T 0)))
-                                                        (str "value:" k))
-                                   :default-stale-ms  1000
-                                   :default-expire-ms 1000})]
+    (with-open [cache (make-cache {:cache-name     (gensym "cache-")
+                                   :init-wait      (- (T 3) (T 1))
+                                   :max-wait       (- (T 3) (T 1))
+                                   :entry-factory  (fn [k]
+                                                     (Thread/sleep (- (T 2) (T 0)))
+                                                     (str "value:" k))
+                                   :default-stale  1000
+                                   :default-expire 1000})]
       (let [client-1 (future
                        ;; T0
                        (cache key)
@@ -210,12 +211,12 @@
 
 (deftest interrupted-wait-test
   (testing "client 2 goes to wait using the initial wait of 1000ms, but it should be interrupted when client 1 sets the value"
-    (with-open [cache (make-cache {:entry-factory     (fn [k]
-                                                        (Thread/sleep 100)
-                                                        (str "value:" k))
-                                   :default-expire-ms 1000
-                                   :init-wait-ms      1000
-                                   :max-wait-ms       2000})]
+    (with-open [cache (make-cache {:entry-factory  (fn [k]
+                                                     (Thread/sleep 100)
+                                                     (str "value:" k))
+                                   :default-expire 1000
+                                   :init-wait      1000
+                                   :max-wait       2000})]
       ;; Client 1, factory called, after 100ms the value should be set in Redis:
       (future
         (cache "foo"))
@@ -234,12 +235,12 @@
         (is (< 50 (- end start) 150) "value was received ~100 ms"))))
 
   (testing "client 2 goes to wait using the initial wait of 10ms, but it should be interrupted when client 1 sets the value"
-    (with-open [cache (make-cache {:entry-factory     (fn [k]
-                                                        (Thread/sleep 100)
-                                                        (str "value:" k))
-                                   :default-expire-ms 1000
-                                   :init-wait-ms      10
-                                   :max-wait-ms       10})]
+    (with-open [cache (make-cache {:entry-factory  (fn [k]
+                                                     (Thread/sleep 100)
+                                                     (str "value:" k))
+                                   :default-expire 1000
+                                   :init-wait      10
+                                   :max-wait       10})]
 
       ;; Client 1, factory called, after 100ms the value should be set in Redis:
       (future

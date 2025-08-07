@@ -1,12 +1,12 @@
 ---
 services:
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     init: true
 
   devcontainer:
     image: jarppe/clj-devcontainer:latest
     restart: always
     volumes:
-      - .:/home/${USER}/workspace
+      - .:/root/workspace
     command: "sleep infinity"
